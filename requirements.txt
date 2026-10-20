@@ -1,0 +1,5 @@
+Flask
+face-recognition
+numpy
+opencv-python
+setuptools<81

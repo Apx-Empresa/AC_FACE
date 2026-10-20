@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cadastro e reconhecimento facial</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, sans-serif;
+      background: #f3f5f8;
+      color: #182230;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+
+    main {
+      width: min(760px, 100%);
+      padding: 24px;
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 8px 28px #18223016;
+    }
+
+    h1 { margin-top: 0; }
+    .camera {
+      position: relative;
+      width: 100%;
+      overflow: hidden;
+      border-radius: 12px;
+      background: #101820;
+      line-height: 0;
+    }
+
+    video {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    input {
+      min-width: 180px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font: inherit;
+    }
+
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 11px 18px;
+      color: white;
+      background: #1769aa;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button:disabled { cursor: default; opacity: 0.55; }
+    #register { background: #137333; }
+    #stop { background: #536273; }
+    #status { font-weight: 700; }
+    .hint { color: #526071; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Cadastro e reconhecimento facial</h1>
+    <p class="hint">
+      {% if registered_name %}
+      Rosto cadastrado: <strong id="registered-name">{{ registered_name }}</strong>.
+      {% else %}
+      Ainda não há rosto cadastrado. Inicie a câmera, digite um nome e cadastre.
+      {% endif %}
+      O cadastro fica salvo localmente neste computador.
+    </p>
+    <div class="camera">
+      <video id="video" autoplay muted playsinline></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <div class="controls">
+      <button id="start">Iniciar câmera</button>
+      <button id="stop" disabled>Parar câmera</button>
+    </div>
+    <div class="controls">
+      <input id="name" type="text" maxlength="60" placeholder="Nome da pessoa"
+             aria-label="Nome da pessoa">
+      <button id="register" disabled>Cadastrar rosto</button>
+    </div>
+    <p id="status" role="status" aria-live="polite">Câmera desligada</p>
+  </main>
+
+  <script>
+    const video = document.querySelector("#video");
+    const canvas = document.querySelector("#overlay");
+    const context = canvas.getContext("2d");
+    const startButton = document.querySelector("#start");
+    const stopButton = document.querySelector("#stop");
+    const registerButton = document.querySelector("#register");
+    const nameInput = document.querySelector("#name");
+    const statusText = document.querySelector("#status");
+    const registeredName = document.querySelector("#registered-name");
+
+    let cameraStream = null;
+    let running = false;
+    let hasRegisteredFace = {{ "true" if registered_name else "false" }};
+
+    function setStatus(message, kind = "error") {
+      statusText.textContent = message;
+      statusText.style.color = kind === "success" ? "#137333"
+        : kind === "working" ? "#526071" : "#b42318";
+    }
+
+    function currentFrameBlob() {
+      return new Promise((resolve, reject) => {
+        if (!video.videoWidth || !video.videoHeight) {
+          reject(new Error("A webcam ainda não está enviando imagem."));
+          return;
+        }
+        const frame = document.createElement("canvas");
+        frame.width = video.videoWidth;
+        frame.height = video.videoHeight;
+        frame.getContext("2d").drawImage(video, 0, 0);
+        frame.toBlob(blob => {
+          if (blob) resolve(blob);
+          else reject(new Error("Não foi possível capturar a imagem da webcam."));
+        }, "image/jpeg", 0.8);
+      });
+    }
+
+    function drawResults(result) {
+      canvas.width = result.width;
+      canvas.height = result.height;
+      context.clearRect(0, 0, canvas.width, canvas.height);
+
+      for (const face of result.faces) {
+        const { top, right, bottom, left } = face.box;
+        const color = face.matched ? "#00d26a" : "#f04438";
+        context.strokeStyle = color;
+        context.lineWidth = Math.max(2, canvas.width / 320);
+        context.strokeRect(left, top, right - left, bottom - top);
+        context.font = `bold ${Math.max(16, canvas.width / 35)}px sans-serif`;
+        context.fillStyle = color;
+        context.fillText(face.name, left, Math.max(top - 8, 20));
+      }
+
+      if (result.access_granted) {
+        setStatus(`Rosto reconhecido: ${result.faces.find(face => face.matched).name}`,
+          "success");
+      } else if (result.faces.length) {
+        setStatus("Acesso Negado / Desconhecido");
+      } else {
+        setStatus("Nenhum rosto encontrado. Olhe para a câmera.");
+      }
+    }
+
+    async function recognizeFrame() {
+      if (!running || !hasRegisteredFace) return;
+      try {
+        const frame = await currentFrameBlob();
+        const formData = new FormData();
+        formData.append("frame", frame, "frame.jpg");
+        const response = await fetch("/api/recognize", {
+          method: "POST",
+          body: formData
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Erro no reconhecimento.");
+        drawResults(result);
+      } catch (error) {
+        setStatus(error.message || "Falha ao conectar com o servidor.");
+        console.error("Erro durante o reconhecimento facial:", error);
+      } finally {
+        if (running && hasRegisteredFace) {
+          window.setTimeout(recognizeFrame, 500);
+        }
+      }
+    }
+
+    startButton.addEventListener("click", async () => {
+      try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false
+        });
+        video.srcObject = cameraStream;
+        await video.play();
+        running = true;
+        startButton.disabled = true;
+        stopButton.disabled = false;
+        registerButton.disabled = false;
+        if (hasRegisteredFace) {
+          setStatus("Câmera ativa. Procurando rosto...", "working");
+          recognizeFrame();
+        } else {
+          setStatus("Câmera ativa. Digite um nome e clique em Cadastrar rosto.",
+            "working");
+        }
+      } catch (error) {
+        setStatus(`Não foi possível iniciar a webcam: ${error.message}`);
+      }
+    });
+
+    registerButton.addEventListener("click", async () => {
+      const name = nameInput.value.trim();
+      if (!name) {
+        setStatus("Digite o nome da pessoa antes de cadastrar.");
+        nameInput.focus();
+        return;
+      }
+      if (hasRegisteredFace &&
+          !window.confirm("Já existe um rosto cadastrado. Deseja substituí-lo?")) {
+        return;
+      }
+
+      registerButton.disabled = true;
+      setStatus("Capturando imagem e cadastrando rosto...", "working");
+      try {
+        const frame = await currentFrameBlob();
+        const formData = new FormData();
+        formData.append("name", name);
+        formData.append("frame", frame, "frame.jpg");
+        const response = await fetch("/api/register", {
+          method: "POST",
+          body: formData
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Falha no cadastro.");
+
+        hasRegisteredFace = true;
+        if (registeredName) {
+          registeredName.textContent = result.registered_name;
+        } else {
+          const notice = document.querySelector(".hint");
+          const nameLabel = document.createElement("strong");
+          nameLabel.id = "registered-name";
+          nameLabel.textContent = result.registered_name;
+          notice.replaceChildren(
+            "Rosto cadastrado: ",
+            nameLabel,
+            ". O cadastro fica salvo localmente neste computador."
+          );
+        }
+        setStatus(result.message, "success");
+        recognizeFrame();
+      } catch (error) {
+        setStatus(error.message || "Não foi possível cadastrar o rosto.");
+        console.error("Erro ao cadastrar rosto:", error);
+      } finally {
+        registerButton.disabled = !running;
+      }
+    });
+
+    stopButton.addEventListener("click", () => {
+      running = false;
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
+      }
+      video.srcObject = null;
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      startButton.disabled = false;
+      stopButton.disabled = true;
+      registerButton.disabled = true;
+      setStatus("Câmera desligada", "working");
+    });
+  </script>
+</body>
+</html>
