@@ -35,7 +35,7 @@ def read_uploaded_frame():
 
 def load_registration():
     """Carrega o encoding salvo localmente, caso já exista um cadastro."""
-    if not REGISTRATION_FILE.is_file() or not REGISTRATION_NAME_FILE.is_file():
+    if not REGISTRATION_FILE.is_file():
         return None, None
 
     try:
